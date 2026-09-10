@@ -132,12 +132,11 @@ export interface AdTheme {
 // ---------------------------------------------------------------------------
 
 export class AdSpecValidationError extends Error {
-  constructor(
-    message: string,
-    public readonly elementId?: string
-  ) {
+  readonly elementId?: string;
+  constructor(message: string, elementId?: string) {
     super(`[AdSpec] ${message}${elementId ? ` (element: "${elementId}")` : ""}`);
     this.name = "AdSpecValidationError";
+    this.elementId = elementId;
   }
 }
 
@@ -165,23 +164,24 @@ export function defineAd(spec: AdSpec): AdSpec {
       );
     }
 
+    const rawEl = el as { type: string; role: string; id: string };
     // Validate role/type combinations
-    if (el.type === "text" && !["primary", "secondary", "badge"].includes(el.role)) {
+    if (rawEl.type === "text" && !["primary", "secondary", "badge"].includes(rawEl.role)) {
       throw new AdSpecValidationError(
-        `Text element has invalid role "${el.role}". Must be one of: primary, secondary, badge`,
-        el.id
+        `Text element has invalid role "${rawEl.role}". Must be one of: primary, secondary, badge`,
+        rawEl.id
       );
     }
-    if (el.type === "image" && !["hero", "branding"].includes(el.role)) {
+    if (rawEl.type === "image" && !["hero", "branding"].includes(rawEl.role)) {
       throw new AdSpecValidationError(
-        `Image element has invalid role "${el.role}". Must be one of: hero, branding`,
-        el.id
+        `Image element has invalid role "${rawEl.role}". Must be one of: hero, branding`,
+        rawEl.id
       );
     }
-    if (el.type === "button" && el.role !== "action") {
+    if (rawEl.type === "button" && rawEl.role !== "action") {
       throw new AdSpecValidationError(
-        `Button element has invalid role "${el.role}". Must be: action`,
-        el.id
+        `Button element has invalid role "${rawEl.role}". Must be: action`,
+        rawEl.id
       );
     }
   }

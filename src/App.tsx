@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import { resolveLayout } from "./resolver";
 import { ALL_SURFACES, defineSurface } from "./surfaces";
 import { sonixAdSpec } from "./adSpec";
@@ -14,98 +14,12 @@ import { SolverPipeline } from "./SolverPipeline";
 import { ExportModal } from "./ExportModal";
 import { sound } from "./sound";
 import { AdRenderer } from "./render-dom";
+import { InteractiveBackground } from "./InteractiveBackground";
+import type { BgMode } from "./InteractiveBackground";
 import "./App.css";
 
-// ---------------------------------------------------------------------------
-// Animated background particle canvas
-// ---------------------------------------------------------------------------
-function ParticleField() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
-    let raf: number;
-    const particles: { x: number; y: number; vx: number; vy: number; size: number; alpha: number; hue: number }[] = [];
-
-    const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
-    resize();
-    window.addEventListener("resize", resize);
-
-    for (let i = 0; i < 70; i++) {
-      particles.push({
-        x: Math.random() * window.innerWidth,
-        y: Math.random() * window.innerHeight,
-        vx: (Math.random() - 0.5) * 0.35,
-        vy: (Math.random() - 0.5) * 0.35,
-        size: Math.random() * 2.2 + 0.6,
-        alpha: Math.random() * 0.45 + 0.05,
-        hue: Math.random() * 70 + 220, // purple to cyan
-      });
-    }
-
-    let mouseX = window.innerWidth / 2;
-    let mouseY = window.innerHeight / 2;
-    const onMouse = (e: MouseEvent) => {
-      mouseX = e.clientX;
-      mouseY = e.clientY;
-    };
-    window.addEventListener("mousemove", onMouse);
-
-    const draw = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      for (const p of particles) {
-        const dx = mouseX - p.x;
-        const dy = mouseY - p.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 220) {
-          p.vx += dx * 0.00004;
-          p.vy += dy * 0.00004;
-        }
-        p.vx *= 0.99;
-        p.vy *= 0.99;
-        p.x += p.vx;
-        p.y += p.vy;
-        if (p.x < 0) p.x = canvas.width;
-        if (p.x > canvas.width) p.x = 0;
-        if (p.y < 0) p.y = canvas.height;
-        if (p.y > canvas.height) p.y = 0;
-
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = `hsla(${p.hue}, 85%, 72%, ${p.alpha})`;
-        ctx.fill();
-      }
-
-      for (let i = 0; i < particles.length; i++) {
-        for (let j = i + 1; j < particles.length; j++) {
-          const dx = particles[i].x - particles[j].x;
-          const dy = particles[i].y - particles[j].y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 110) {
-            ctx.beginPath();
-            ctx.moveTo(particles[i].x, particles[i].y);
-            ctx.lineTo(particles[j].x, particles[j].y);
-            ctx.strokeStyle = `rgba(139, 92, 246, ${0.1 * (1 - dist / 110)})`;
-            ctx.lineWidth = 0.6;
-            ctx.stroke();
-          }
-        }
-      }
-      raf = requestAnimationFrame(draw);
-    };
-    draw();
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", resize);
-      window.removeEventListener("mousemove", onMouse);
-    };
-  }, []);
-  return <canvas ref={canvasRef} className="particle-canvas" />;
-}
+export type WorkspaceLayout = "split" | "cinema" | "triad";
+export type SidebarTab = "stats" | "campaign" | "pipeline" | "constraints" | "degrade";
 
 // ---------------------------------------------------------------------------
 // Strategy metadata
@@ -314,17 +228,25 @@ export default function App(): React.ReactElement {
   const [extraSurfaces, setExtraSurfaces] = useState<SurfaceProfile[]>([]);
   const [activeThemeId, setActiveThemeId] = useState<string>("nebula");
 
+  // Interactive Background & Formatting states
+  const [bgMode, setBgMode] = useState<BgMode>("cyber-grid");
+  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayout>("split");
+  const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab>("stats");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+
   // Dynamic Fluid Dimensions (for interactive resizer)
   const [freeformWidth, setFreeformWidth] = useState<number>(ALL_SURFACES[0].width);
   const [freeformHeight, setFreeformHeight] = useState<number>(ALL_SURFACES[0].height);
   const [isFreeformActive, setIsFreeformActive] = useState<boolean>(false);
 
+  // Interactive Constraints Lab state (live tweaks)
+  const [customMinTap, setCustomMinTap] = useState<number>(44);
+  const [customMinText, setCustomMinText] = useState<number>(14);
+
   // View Options
   const [deviceType, setDeviceType] = useState<DeviceType>("auto");
   const [showDebug, setShowDebug] = useState<boolean>(false);
   const [showAll, setShowAll] = useState<boolean>(false);
-  const [showPipeline, setShowPipeline] = useState<boolean>(true);
-  const [showCampaignEditor, setShowCampaignEditor] = useState<boolean>(false);
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [showCustomForm, setShowCustomForm] = useState<boolean>(false);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
@@ -335,7 +257,9 @@ export default function App(): React.ReactElement {
 
   const activeSurface = useMemo(() => {
     const base = allSurfaces.find(s => s.id === selectedId) ?? allSurfaces[0];
-    if (!isFreeformActive) return base;
+    if (!isFreeformActive) {
+      return base;
+    }
 
     return defineSurface({
       ...base,
@@ -343,12 +267,29 @@ export default function App(): React.ReactElement {
       name: `${base.name} (Fluid)`,
       width: freeformWidth,
       height: freeformHeight,
+      constraints: {
+        ...base.constraints,
+        minTapTarget: customMinTap || base.constraints.minTapTarget,
+        minTextSize: customMinText || base.constraints.minTextSize,
+      },
     });
-  }, [allSurfaces, selectedId, isFreeformActive, freeformWidth, freeformHeight]);
+  }, [allSurfaces, selectedId, isFreeformActive, freeformWidth, freeformHeight, customMinTap, customMinText]);
 
   // Resolve layout
   const layout = useMemo(() => resolveLayout(currentSpec, activeSurface), [currentSpec, activeSurface]);
   const allLayouts = useMemo(() => allSurfaces.map(s => resolveLayout(currentSpec, s)), [allSurfaces, currentSpec]);
+
+  // Triad layout surfaces (Mobile, Broadcast, Kiosk)
+  const triadLayouts = useMemo(() => {
+    const s1 = allSurfaces.find(s => s.id === "mobile-interstitial") ?? allSurfaces[0];
+    const s2 = allSurfaces.find(s => s.id === "broadcast-lower-third") ?? allSurfaces[2];
+    const s3 = allSurfaces.find(s => s.id === "retail-kiosk") ?? allSurfaces[3];
+    return [
+      { surface: s1, layout: resolveLayout(currentSpec, s1), device: "phone" as DeviceType },
+      { surface: s2, layout: resolveLayout(currentSpec, s2), device: "tv" as DeviceType },
+      { surface: s3, layout: resolveLayout(currentSpec, s3), device: "kiosk" as DeviceType },
+    ];
+  }, [allSurfaces, currentSpec]);
 
   // Surface selection
   const handleSelectSurface = useCallback((id: string) => {
@@ -359,6 +300,8 @@ export default function App(): React.ReactElement {
     if (s) {
       setFreeformWidth(s.width);
       setFreeformHeight(s.height);
+      setCustomMinTap(s.constraints.minTapTarget ?? 44);
+      setCustomMinText(s.constraints.minTextSize ?? 14);
     }
   }, [allSurfaces]);
 
@@ -411,17 +354,18 @@ export default function App(): React.ReactElement {
 
   // Compute adaptive preview scale
   const autoScale = useMemo(() => {
-    const maxW = 580;
-    const maxH = 460;
+    const maxW = workspaceLayout === "cinema" ? 780 : 560;
+    const maxH = workspaceLayout === "cinema" ? 560 : 440;
     return Math.min(maxW / activeSurface.width, maxH / activeSurface.height, 1);
-  }, [activeSurface.width, activeSurface.height]);
+  }, [activeSurface.width, activeSurface.height, workspaceLayout]);
 
   const effectiveScale = autoScale * scaleFactor;
   const meta = STRATEGY_META[layout.flowStrategy] ?? STRATEGY_META.column;
 
   return (
-    <div className="app">
-      <ParticleField />
+    <div className={`app layout-${workspaceLayout}`}>
+      {/* ── INTERACTIVE DYNAMIC BACKGROUND CANVAS ── */}
+      <InteractiveBackground mode={bgMode} onModeChange={setBgMode} />
 
       {/* ── TOP HEADER ── */}
       <header className="app-header">
@@ -454,8 +398,45 @@ export default function App(): React.ReactElement {
           </div>
         </div>
 
-        {/* Right Actions */}
+        {/* Right: Interactive Format Switcher & Tools */}
         <div className="header-actions">
+          {/* Format / Workspace Mode Selector */}
+          <div className="format-mode-bar">
+            <button
+              className={`format-btn ${workspaceLayout === "split" ? "format-active" : ""}`}
+              onClick={() => {
+                sound.playClick();
+                setWorkspaceLayout("split");
+                setShowAll(false);
+              }}
+              title="Studio Split View (Canvas + Inspector Dock)"
+            >
+              <span>🖥️</span> Studio
+            </button>
+            <button
+              className={`format-btn ${workspaceLayout === "cinema" ? "format-active" : ""}`}
+              onClick={() => {
+                sound.playClick();
+                setWorkspaceLayout("cinema");
+                setShowAll(false);
+              }}
+              title="Cinema Showcase View (Full focus grand stage)"
+            >
+              <span>🎬</span> Cinema
+            </button>
+            <button
+              className={`format-btn ${workspaceLayout === "triad" ? "format-active" : ""}`}
+              onClick={() => {
+                sound.playClick();
+                setWorkspaceLayout("triad");
+                setShowAll(false);
+              }}
+              title="Synchronized Triad Wall (Phone + TV + Kiosk live together)"
+            >
+              <span>📱</span> Triad Wall
+            </button>
+          </div>
+
           {/* Audio toggle */}
           <button
             className={`action-btn icon-only-btn ${soundEnabled ? "btn-active" : ""}`}
@@ -476,35 +457,13 @@ export default function App(): React.ReactElement {
               }}
               title="Select realistic device frame"
             >
-              <option value="auto">Auto Device</option>
+              <option value="auto">Auto Frame</option>
               <option value="phone">iPhone 16 Pro</option>
               <option value="tv">Broadcast TV (4K)</option>
               <option value="kiosk">Retail Kiosk</option>
               <option value="clean">Clean Studio</option>
             </select>
           </div>
-
-          {/* Campaign Editor Toggle */}
-          <button
-            className={`action-btn ${showCampaignEditor ? "btn-active-glow" : ""}`}
-            onClick={() => {
-              sound.playClick();
-              setShowCampaignEditor(v => !v);
-            }}
-          >
-            <span>🎨</span> Campaign Studio
-          </button>
-
-          {/* Pipeline Toggle */}
-          <button
-            className={`action-btn ${showPipeline ? "btn-active" : ""}`}
-            onClick={() => {
-              sound.playClick();
-              setShowPipeline(v => !v);
-            }}
-          >
-            <span>⚡</span> Pipeline
-          </button>
 
           {/* Debug Overlay */}
           <button
@@ -516,7 +475,7 @@ export default function App(): React.ReactElement {
             }}
           >
             <span className={`dot-indicator ${showDebug ? "dot-active" : ""}`} />
-            Debug Boxes
+            Debug
           </button>
 
           {/* All Surfaces Matrix */}
@@ -528,7 +487,7 @@ export default function App(): React.ReactElement {
               setShowAll(v => !v);
             }}
           >
-            <span>⊞</span> Multi-Surface Matrix
+            <span>⊞</span> Matrix
           </button>
 
           {/* Custom Surface */}
@@ -551,7 +510,7 @@ export default function App(): React.ReactElement {
               setShowExportModal(true);
             }}
           >
-            <span>📦</span> Export Spec
+            <span>📦</span> Export
           </button>
         </div>
       </header>
@@ -587,7 +546,7 @@ export default function App(): React.ReactElement {
         </div>
       </div>
 
-      {/* ── MAIN WORKSPACE ── */}
+      {/* ── MAIN WORKSPACE (INTERACTIVE FORMATTING) ── */}
       <main className="app-main">
         {showAll ? (
           /* Multi-surface side-by-side grid */
@@ -600,7 +559,7 @@ export default function App(): React.ReactElement {
                 </p>
               </div>
               <button className="action-btn btn-accent" onClick={() => setShowAll(false)}>
-                ← Back to Interactive Studio
+                ← Back to Studio
               </button>
             </div>
             <AllSurfacesMosaic
@@ -613,10 +572,69 @@ export default function App(): React.ReactElement {
               showDebug={showDebug}
             />
           </div>
+        ) : workspaceLayout === "triad" ? (
+          /* ── FORMAT 3: SYNCHRONIZED TRIAD WALL ── */
+          <div className="triad-wall">
+            <div className="triad-header">
+              <div>
+                <h2 className="triad-title">Synchronized Multi-Device Live Wall</h2>
+                <p className="triad-sub">
+                  Watch three fundamentally different surfaces adapt simultaneously in real time as you edit content or tweak constraints.
+                </p>
+              </div>
+              <button
+                className="action-btn btn-gradient"
+                onClick={() => {
+                  sound.playClick();
+                  setWorkspaceLayout("split");
+                  setActiveSidebarTab("campaign");
+                }}
+              >
+                🎨 Open Campaign Studio
+              </button>
+            </div>
+
+            <div className="triad-grid">
+              {triadLayouts.map(item => (
+                <div key={item.surface.id} className="triad-card">
+                  <div className="triad-card-header">
+                    <span className="triad-icon">{item.surface.icon}</span>
+                    <div className="triad-name-box">
+                      <span className="triad-name">{item.surface.name}</span>
+                      <span className="triad-dims">{item.surface.width}×{item.surface.height} (AR: {item.layout.aspectRatio.toFixed(2)})</span>
+                    </div>
+                    <StrategyBadge strategy={item.layout.flowStrategy} />
+                  </div>
+                  <div className="triad-device-viewport">
+                    <DeviceFrame
+                      layout={item.layout}
+                      showDebug={showDebug}
+                      deviceType={item.device}
+                      scale={Math.min(340 / item.surface.width, 340 / item.surface.height, 0.9)}
+                    />
+                  </div>
+                  <div className="triad-footer">
+                    <span className="triad-status">
+                      {item.layout.placed.length} placed · {item.layout.dropped.length} dropped
+                    </span>
+                    <button
+                      className="triad-inspect-btn"
+                      onClick={() => {
+                        handleSelectSurface(item.surface.id);
+                        setWorkspaceLayout("split");
+                      }}
+                    >
+                      Focus in Studio →
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         ) : (
-          /* Single Interactive Studio View */
-          <div className="studio-layout">
-            {/* Left/Center: Interactive Resizer & Preview */}
+          /* ── FORMAT 1 & 2: STUDIO SPLIT OR CINEMA FOCUS ── */
+          <div className={`studio-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+            {/* Center Canvas */}
             <div className="canvas-section">
               <InteractiveResizer
                 currentWidth={activeSurface.width}
@@ -643,152 +661,284 @@ export default function App(): React.ReactElement {
                 <input
                   type="range"
                   min="0.5"
-                  max="1.5"
+                  max="1.6"
                   step="0.05"
                   value={scaleFactor}
                   onChange={e => setScaleFactor(parseFloat(e.target.value))}
                 />
                 <span className="zoom-value">{Math.round(scaleFactor * 100)}%</span>
                 <button className="zoom-reset" onClick={() => setScaleFactor(1)}>Reset</button>
-              </div>
 
-              {/* Interactive Solver Pipeline */}
-              {showPipeline && (
-                <div className="pipeline-wrapper">
-                  <SolverPipeline layout={layout} />
-                </div>
-              )}
+                {workspaceLayout === "cinema" && (
+                  <button
+                    className="action-btn icon-only-btn"
+                    style={{ marginLeft: "auto" }}
+                    onClick={() => {
+                      sound.playClick();
+                      setWorkspaceLayout("split");
+                    }}
+                    title="Exit Cinema View"
+                  >
+                    Exit Cinema ✕
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* Right: Diagnostics & Inspector Sidebar */}
-            <aside className="sidebar-section">
-              {/* Campaign Studio Drawer or Diagnostics */}
-              {showCampaignEditor ? (
-                <div className="drawer-panel">
-                  <CampaignEditor
-                    adSpec={currentSpec}
-                    onChange={setCurrentSpec}
-                    onReset={handleResetSpec}
-                    activeThemeId={activeThemeId}
-                    onSelectTheme={handleSelectTheme}
-                  />
-                </div>
-              ) : (
-                <div className="diagnostics-panel">
-                  {/* Top Stats */}
-                  <div className="stats-grid">
-                    <Stat label="Aspect Ratio" value={layout.aspectRatio.toFixed(2)} unit=":1" />
-                    <Stat label="Placed Elements" value={layout.placed.length} color="#4ade80" />
-                    <Stat
-                      label="Dropped Elements"
-                      value={layout.dropped.length}
-                      color={layout.dropped.length > 0 ? "#f87171" : "#4ade80"}
-                    />
-                    <Stat
-                      label="Scale Adjustments"
-                      value={layout.placed.filter(p => p.isShrunk).length}
-                      color="#fbbf24"
-                    />
-                  </div>
+            {/* Right: Interactive Tabbed Telemetry Dock */}
+            {workspaceLayout === "split" && (
+              <aside className="sidebar-dock">
+                {/* Dock Header Tabs */}
+                <div className="dock-tabs">
+                  <button
+                    className={`dock-tab ${activeSidebarTab === "stats" ? "tab-active" : ""}`}
+                    onClick={() => {
+                      sound.playClick();
+                      setActiveSidebarTab("stats");
+                    }}
+                    title="Real-time Layout Telemetry"
+                  >
+                    📊 Stats
+                  </button>
+                  <button
+                    className={`dock-tab ${activeSidebarTab === "campaign" ? "tab-active" : ""}`}
+                    onClick={() => {
+                      sound.playClick();
+                      setActiveSidebarTab("campaign");
+                    }}
+                    title="Campaign Copy, Priorities & Themes"
+                  >
+                    🎨 Campaign
+                  </button>
+                  <button
+                    className={`dock-tab ${activeSidebarTab === "pipeline" ? "tab-active" : ""}`}
+                    onClick={() => {
+                      sound.playClick();
+                      setActiveSidebarTab("pipeline");
+                    }}
+                    title="6-Stage Algorithmic Resolution Pipeline"
+                  >
+                    ⚡ Pipeline
+                  </button>
+                  <button
+                    className={`dock-tab ${activeSidebarTab === "constraints" ? "tab-active" : ""}`}
+                    onClick={() => {
+                      sound.playClick();
+                      setActiveSidebarTab("constraints");
+                    }}
+                    title="Interactive Constraint Testing Lab"
+                  >
+                    🛡️ Lab
+                  </button>
 
-                  {/* Flow Strategy Card */}
-                  <div className="strategy-feature-card" style={{ "--s-color": meta.color } as React.CSSProperties}>
-                    <div className="feature-card-header">
-                      <span className="feature-tag">RESOLVED STRATEGY</span>
-                      <span className="feature-value" style={{ color: meta.color }}>
-                        {meta.label}
-                      </span>
-                    </div>
-                    <p className="feature-desc">{meta.desc}</p>
-                    <div className="feature-metrics">
-                      <div className="fm-item">
-                        <span className="fm-key">Content Rect:</span>
-                        <span className="fm-val">{Math.round(layout.contentRect.width)}×{Math.round(layout.contentRect.height)}px</span>
+                  <button
+                    className="dock-tab dock-collapse-btn"
+                    onClick={() => {
+                      sound.playClick();
+                      setSidebarCollapsed(v => !v);
+                    }}
+                    title={sidebarCollapsed ? "Expand Inspector Dock" : "Collapse Inspector Dock"}
+                  >
+                    {sidebarCollapsed ? "◀" : "▶"}
+                  </button>
+                </div>
+
+                {/* Tab Content Panes */}
+                <div className="dock-content">
+                  {activeSidebarTab === "stats" && (
+                    <div className="dock-pane stats-pane">
+                      {/* Top Stats */}
+                      <div className="stats-grid">
+                        <Stat label="Aspect Ratio" value={layout.aspectRatio.toFixed(2)} unit=":1" />
+                        <Stat label="Placed Elements" value={layout.placed.length} color="#4ade80" />
+                        <Stat
+                          label="Dropped Elements"
+                          value={layout.dropped.length}
+                          color={layout.dropped.length > 0 ? "#f87171" : "#4ade80"}
+                        />
+                        <Stat
+                          label="Scale Adjustments"
+                          value={layout.placed.filter(p => p.isShrunk).length}
+                          color="#fbbf24"
+                        />
                       </div>
-                      {layout.surface.safeArea && (
-                        <div className="fm-item">
-                          <span className="fm-key">Safe Margin:</span>
-                          <span className="fm-val">
-                            T:{layout.surface.safeArea.top} B:{layout.surface.safeArea.bottom} L:{layout.surface.safeArea.left} R:{layout.surface.safeArea.right}
+
+                      {/* Flow Strategy Card */}
+                      <div className="strategy-feature-card" style={{ "--s-color": meta.color } as React.CSSProperties}>
+                        <div className="feature-card-header">
+                          <span className="feature-tag">RESOLVED STRATEGY</span>
+                          <span className="feature-value" style={{ color: meta.color }}>
+                            {meta.label}
                           </span>
                         </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Elements Placement Hierarchy */}
-                  <div className="sidebar-card">
-                    <div className="card-header-row">
-                      <span className="card-title">Element Resolution Ledger</span>
-                      <span className="card-count">{layout.placed.length}/{currentSpec.elements.length} placed</span>
-                    </div>
-                    <div className="element-cards-list">
-                      {currentSpec.elements.map(el => (
-                        <ElementCard
-                          key={el.id}
-                          layout={layout}
-                          elId={el.id}
-                          label={(el as { label?: string }).label ?? el.id}
-                          role={el.role}
-                          priority={el.priority}
-                        />
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Surface Constraints */}
-                  <div className="sidebar-card">
-                    <div className="card-header-row">
-                      <span className="card-title">Active Surface Constraints</span>
-                    </div>
-                    <div className="constraint-tags">
-                      {layout.surface.constraints.minTapTarget && (
-                        <div className="c-tag">
-                          <span>👆</span> minTapTarget: <strong>{layout.surface.constraints.minTapTarget}px</strong>
-                        </div>
-                      )}
-                      {layout.surface.constraints.minTextSize && (
-                        <div className="c-tag">
-                          <span>🔤</span> minTextSize: <strong>{layout.surface.constraints.minTextSize}px</strong>
-                        </div>
-                      )}
-                      {layout.surface.constraints.maxElements && (
-                        <div className="c-tag">
-                          <span>⬢</span> maxElements: <strong>{layout.surface.constraints.maxElements}</strong>
-                        </div>
-                      )}
-                      {layout.surface.constraints.touchOnly && (
-                        <div className="c-tag"><span>☝️</span> touchOnly: <strong>true</strong></div>
-                      )}
-                      {layout.surface.constraints.viewingDistance && (
-                        <div className="c-tag"><span>👁️</span> distance: <strong>{layout.surface.constraints.viewingDistance}</strong></div>
-                      )}
-                      {layout.surface.constraints.inputModality && (
-                        <div className="c-tag"><span>⌨️</span> modality: <strong>{layout.surface.constraints.inputModality}</strong></div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Degradation Ledger */}
-                  {layout.dropped.length > 0 && (
-                    <div className="sidebar-card drop-ledger-card">
-                      <div className="card-header-row">
-                        <span className="card-title error-text">Constraint Drop Auditor</span>
-                        <span className="drop-pill">{layout.dropped.length} omitted</span>
-                      </div>
-                      <div className="drop-list">
-                        {layout.dropped.map(d => (
-                          <div key={d.id} className="drop-item">
-                            <div className="drop-id">✕ {d.id}</div>
-                            <div className="drop-reason">{d.reason}</div>
+                        <p className="feature-desc">{meta.desc}</p>
+                        <div className="feature-metrics">
+                          <div className="fm-item">
+                            <span className="fm-key">Content Rect:</span>
+                            <span className="fm-val">{Math.round(layout.contentRect.width)}×{Math.round(layout.contentRect.height)}px</span>
                           </div>
-                        ))}
+                          {layout.surface.safeArea && (
+                            <div className="fm-item">
+                              <span className="fm-key">Safe Margin:</span>
+                              <span className="fm-val">
+                                T:{layout.surface.safeArea.top} B:{layout.surface.safeArea.bottom} L:{layout.surface.safeArea.left} R:{layout.surface.safeArea.right}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Elements Placement Hierarchy */}
+                      <div className="sidebar-card">
+                        <div className="card-header-row">
+                          <span className="card-title">Element Resolution Ledger</span>
+                          <span className="card-count">{layout.placed.length}/{currentSpec.elements.length} placed</span>
+                        </div>
+                        <div className="element-cards-list">
+                          {currentSpec.elements.map(el => (
+                            <ElementCard
+                              key={el.id}
+                              layout={layout}
+                              elId={el.id}
+                              label={(el as { label?: string }).label ?? el.id}
+                              role={el.role}
+                              priority={el.priority}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeSidebarTab === "campaign" && (
+                    <div className="dock-pane campaign-pane">
+                      <CampaignEditor
+                        adSpec={currentSpec}
+                        onChange={setCurrentSpec}
+                        onReset={handleResetSpec}
+                        activeThemeId={activeThemeId}
+                        onSelectTheme={handleSelectTheme}
+                      />
+                    </div>
+                  )}
+
+                  {activeSidebarTab === "pipeline" && (
+                    <div className="dock-pane pipeline-pane">
+                      <SolverPipeline layout={layout} />
+                    </div>
+                  )}
+
+                  {activeSidebarTab === "constraints" && (
+                    <div className="dock-pane constraints-pane">
+                      <div className="sidebar-card">
+                        <div className="card-header-row">
+                          <span className="card-title">🧪 Live Constraint Testing Lab</span>
+                        </div>
+                        <p className="feature-desc">
+                          Tweak constraints in real time to observe how the mathematical solver guarantees readability and touch accessibility.
+                        </p>
+
+                        <div className="lab-controls">
+                          <div className="lab-control-row">
+                            <div className="lab-label-row">
+                              <span className="lab-label">Min Tap Target (Touch Target)</span>
+                              <span className="lab-val">{customMinTap}px</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="24"
+                              max="88"
+                              step="2"
+                              value={customMinTap}
+                              onChange={e => {
+                                setIsFreeformActive(true);
+                                setCustomMinTap(parseInt(e.target.value, 10));
+                              }}
+                            />
+                          </div>
+
+                          <div className="lab-control-row">
+                            <div className="lab-label-row">
+                              <span className="lab-label">Min Font Size (Legibility)</span>
+                              <span className="lab-val">{customMinText}px</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="8"
+                              max="48"
+                              step="1"
+                              value={customMinText}
+                              onChange={e => {
+                                setIsFreeformActive(true);
+                                setCustomMinText(parseInt(e.target.value, 10));
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Active Surface Constraints */}
+                      <div className="sidebar-card">
+                        <div className="card-header-row">
+                          <span className="card-title">Active Surface Profile Constraints</span>
+                        </div>
+                        <div className="constraint-tags">
+                          {layout.surface.constraints.minTapTarget && (
+                            <div className="c-tag">
+                              <span>👆</span> minTapTarget: <strong>{layout.surface.constraints.minTapTarget}px</strong>
+                            </div>
+                          )}
+                          {layout.surface.constraints.minTextSize && (
+                            <div className="c-tag">
+                              <span>🔤</span> minTextSize: <strong>{layout.surface.constraints.minTextSize}px</strong>
+                            </div>
+                          )}
+                          {layout.surface.constraints.maxElements && (
+                            <div className="c-tag">
+                              <span>⬢</span> maxElements: <strong>{layout.surface.constraints.maxElements}</strong>
+                            </div>
+                          )}
+                          {layout.surface.constraints.touchOnly && (
+                            <div className="c-tag"><span>☝️</span> touchOnly: <strong>true</strong></div>
+                          )}
+                          {layout.surface.constraints.viewingDistance && (
+                            <div className="c-tag"><span>👁️</span> distance: <strong>{layout.surface.constraints.viewingDistance}</strong></div>
+                          )}
+                          {layout.surface.constraints.inputModality && (
+                            <div className="c-tag"><span>⌨️</span> modality: <strong>{layout.surface.constraints.inputModality}</strong></div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeSidebarTab === "degrade" && (
+                    <div className="dock-pane degrade-pane">
+                      <div className="sidebar-card drop-ledger-card">
+                        <div className="card-header-row">
+                          <span className="card-title error-text">Constraint Drop Auditor</span>
+                          <span className="drop-pill">{layout.dropped.length} omitted</span>
+                        </div>
+                        {layout.dropped.length > 0 ? (
+                          <div className="drop-list">
+                            {layout.dropped.map(d => (
+                              <div key={d.id} className="drop-item">
+                                <div className="drop-id">✕ {d.id}</div>
+                                <div className="drop-reason">{d.reason}</div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="feature-desc" style={{ color: "var(--emerald)" }}>
+                            ✓ Zero dropped elements. The surface budget accommodates all content elements.
+                          </p>
+                        )}
                       </div>
                     </div>
                   )}
                 </div>
-              )}
-            </aside>
+              </aside>
+            )}
           </div>
         )}
       </main>

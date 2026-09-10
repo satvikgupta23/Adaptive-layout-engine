@@ -1,0 +1,16 @@
+/* index.css — global reset & base styles */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+}
+
+body {
+  min-height: 100vh;
+  background: #070710;
+  color: #f0f0ff;
+}
